@@ -1,0 +1,111 @@
+import type { Message, ChatState, ToolCall, WeatherResult, MCPResult, ErrorResult, SessionInfo } from '../../worker/types';
+export interface ChatResponse {
+  success: boolean;
+  data?: ChatState;
+  error?: string;
+}
+export const MODELS = [
+  { id: 'google-ai-studio/gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+  { id: 'openai/gpt-4o', name: 'ChatGPT 4o' },
+  { id: 'google-ai-studio/gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+  { id: 'google-ai-studio/gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+  { id: 'grok/grok-4-latest', name: 'Grok 4 Latest' },
+  { id: 'workers-ai/@cf/moonshotai/kimi-k2-instruct', name: 'Kimi K2 Instruct' },
+  { id: 'openai/gpt-5', name: 'ChatGPT 5' },
+  { id: 'openai/gpt-5-mini', name: 'ChatGPT 5 Mini' },
+  { id: 'openai/gpt-oss-120b', name: 'ChatGPT OSS 120B' },
+  { id: 'cerebras/gpt-oss-120b', name: 'Cerebras ChatGPT OSS 120B' },
+  { id: 'cerebras/qwen-3-coder-480b', name: 'Cerebras Qwen 3 Coder 480B' },
+];
+class ChatService {
+  private sessionId: string;
+  private baseUrl: string;
+  constructor() {
+    this.sessionId = crypto.randomUUID();
+    this.baseUrl = `/api/chat/${this.sessionId}`;
+  }
+  async sendMessage(
+    message: string,
+    model?: string,
+    onChunk?: (chunk: string) => void
+  ): Promise<ChatResponse> {
+    try {
+      const response = await fetch(`${this.baseUrl}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, model, stream: !!onChunk }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      if (onChunk && response.body) {
+        // Handle streaming response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            if (chunk) {
+              fullResponse += chunk;
+              onChunk(chunk);
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        return { success: true };
+      }
+      // Non-streaming response
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      return { success: false, error: 'Failed to send message' };
+    }
+  }
+  getSessionId(): string {
+    return this.sessionId;
+  }
+  newSession(): void {
+    this.sessionId = crypto.randomUUID();
+    this.baseUrl = `/api/chat/${this.sessionId}`;
+  }
+}
+export const chatService = new ChatService();
+export const formatTime = (timestamp: number): string => {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+};
+export const generateSessionTitle = (firstUserMessage?: string): string => {
+  const now = new Date();
+  const dateTime = now.toLocaleString([], {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  if (!firstUserMessage || !firstUserMessage.trim()) {
+    return `Chat ${dateTime}`;
+  }
+  // Clean and truncate the message
+  const cleanMessage = firstUserMessage.trim().replace(/\s+/g, ' ');
+  const truncated = cleanMessage.length > 40
+    ? cleanMessage.slice(0, 37) + '...'
+    : cleanMessage;
+  return `${truncated} • ${dateTime}`;
+};
+export const renderToolCall = (toolCall: ToolCall): string => {
+  const result = toolCall.result as WeatherResult | MCPResult | ErrorResult | undefined;
+  if (!result) return `⚠️ ${toolCall.name}: No result`;
+  if ('error' in result) return `❌ ${toolCall.name}: ${result.error}`;
+  if ('content' in result) return `🔧 ${toolCall.name}: Executed`;
+  if (toolCall.name === 'get_weather') {
+    const weather = result as WeatherResult;
+    return `🌤️ Weather in ${weather.location}: ${weather.temperature}°C, ${weather.condition}`;
+  }
+  return `🔧 ${toolCall.name}: Done`;
+};
